@@ -21,12 +21,27 @@ fires a toast for every id that leaves the set (running → idle). No host
 communication is needed — the permanent client half has no `host.call` bridge,
 so the whole feature is driven from the client snapshot.
 
-Toasts:
+Toasts (in-page, visible while the GUI tab is in the foreground):
 
 - title: `Agent finished`
 - message: `Execution completed in <cwd basename>`
 - auto-dismiss after 5 s (`TOAST_LIFE_MS`), dismissible via the × button
 - at most 4 visible at once (`MAX_TOASTS`), oldest dropped first
+
+Background-tab notifications (the in-page toast is invisible while the GUI
+tab is not in the foreground, so every finish is additionally announced):
+
+- **OS-level notification** — a Web Notification ("Agent finished /
+  Execution completed in \<cwd\>") that surfaces over whichever tab or window
+  you're looking at. Clicking it focuses the GUI. Requires notification
+  permission: the plugin calls `Notification.requestPermission()` on load and
+  on your first click (allow the browser prompt).
+- **Chime** — a short two-tone WebAudio beep, best effort.
+- **Tab-title flash** — the tab title becomes "✓ Agent finished" for
+  `TITLE_FLASH_MS` (default 6 s) as a fallback when notifications are denied
+  or unavailable, and when another *window* (not another tab) has focus.
+  The tab strip stays visible even while the tab itself is hidden, so this
+  works in both cases.
 
 ## Installation
 
@@ -57,5 +72,7 @@ Edit `notify.client.js`:
 
 - `TOAST_LIFE_MS` — auto-dismiss delay (default `5000`)
 - `MAX_TOASTS` — max concurrent toasts (default `4`)
+- `TITLE_FLASH_MS` — how long the "✓ Agent finished" tab-title flash lasts (default `6000`)
+- `playChime()` / `announceFinished()` — the background-tab chime + notification behavior
 - `sessionLabel()` — what the message shows for the finished session
 - the `CSS` block — toast styling (colors use raw values; adapt to your theme)

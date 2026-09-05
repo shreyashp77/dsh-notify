@@ -21,8 +21,11 @@ window.__ModuleLoader__.load({
     var exports = module.exports;
     const React = require('react');
 
+    console.info('[dsh-notify] browser half materialized');
+
     const TOAST_LIFE_MS = 5000;
     const MAX_TOASTS = 4;
+    const TITLE_FLASH_MS = 6000;
 
     const CSS = `
       .dn-toast-stack { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 10000; pointer-events: none; }
@@ -31,6 +34,8 @@ window.__ModuleLoader__.load({
       .dn-toast-msg { opacity: 0.85; word-break: break-word; }
       .dn-toast-x { position: absolute; top: 4px; right: 6px; background: none; border: none; color: inherit; opacity: 0.6; cursor: pointer; font-size: 15px; padding: 2px 5px; }
       .dn-toast-x:hover { opacity: 1; }
+      .dn-badge { position: fixed; top: 12px; right: 12px; z-index: 10001; padding: 6px 12px; border-radius: 999px; background: rgba(24, 26, 32, 0.92); color: #e5e7eb; border: 1px solid rgba(255,255,255,0.15); font-size: 12px; font-family: ui-sans-serif, system-ui, sans-serif; cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,0.35); }
+      .dn-badge:hover { border-color: rgba(255,255,255,0.4); }
       @keyframes dn-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
     `;
 
@@ -58,9 +63,131 @@ window.__ModuleLoader__.load({
         return;
       }
       ensureStyles();
+      console.info('[dsh-notify] apply() ran; slots ok; notification.permission =',
+        typeof Notification !== 'undefined' ? Notification.permission : 'unsupported');
+
+      // Notification permission: try on load, and again on the first user
+      // interaction (some browsers require activation to show the prompt).
+      ensureNotifyPermission();
+      window.addEventListener('pointerdown', ensureNotifyPermission, { once: true, capture: true });
+
+      /* Always-visible status/test pill (top-right). Adaptive:
+       *   permission default -> "allow finish notifications" (click = request)
+       *   permission denied  -> "notifications blocked (site settings)"
+       *   permission granted -> "test notify" (click = fire a test OS
+       *                          notification + test toast, to verify the
+       *                          whole pathway with one click). */
+      let pill = null;
+      function renderPill() {
+        const perm = typeof Notification !== 'undefined' ? Notification.permission : 'unsupported';
+        if (perm === 'unsupported') return; // nothing to show or fix in-browser
+        if (!pill) {
+          pill = document.createElement('button');
+          pill.className = 'dn-badge';
+          pill.setAttribute('data-plugin', 'dsh-notify');
+          pill.addEventListener('click', () => {
+            if (Notification.permission === 'default') {
+              ensureNotifyPermission();
+            } else if (Notification.permission === 'granted') {
+              const ok = systemNotify('dsh-notify self-test: if you read this in another tab, cross-tab notifications work.');
+              playChime();
+              fireTestToast('self-test fired; OS notification shown: ' + ok);
+              console.info('[dsh-notify] self-test: systemNotify =', ok);
+            }
+            setTimeout(renderPill, 400);
+          });
+          document.body.appendChild(pill);
+        }
+        pill.textContent = perm === 'granted'
+          ? '\u{1F514} test notify'
+          : perm === 'denied'
+            ? '\u{1F507} notifications blocked (site settings)'
+            : '\u{1F514} allow finish notifications';
+      }
+      function fireTestToast(message) {
+        window.dispatchEvent(new CustomEvent('dsh-notify:test', { detail: { message: message } }));
+      }
+      renderPill();
+      // Re-check after the load-time/first-click prompt settles.
+      setTimeout(renderPill, 1500);
+      setTimeout(renderPill, 5000);
 
       /* Per-materialization state: previous running set (null = not primed). */
       let prevRunning = null;
+      /* Last known cwd per session, so sessions that already LEFT the running
+       * set can still be labeled in toasts/notifications. */
+      const metaHistory = {};
+
+      /*
+       * Background-tab awareness. The in-page toast lives in this page's DOM,
+       * so it is invisible while the GUI tab is not in the foreground — exactly
+       * when the user needs the cue. On every finish we therefore additionally:
+       *   - fire an OS-level Web Notification (surfaces over any tab/window;
+       *     permission requested on load and on first click, best effort),
+       *   - flash the tab title (still visible in the tab strip while hidden),
+       *   - play a short chime (WebAudio, best effort).
+       */
+      let audioCtx = null;
+      function playChime() {
+        try {
+          audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+          if (audioCtx.state === 'suspended') audioCtx.resume();
+          const t = audioCtx.currentTime;
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(880, t);
+          osc.frequency.setValueAtTime(1174.66, t + 0.12);
+          gain.gain.setValueAtTime(0.0001, t);
+          gain.gain.exponentialRampToValueAtTime(0.12, t + 0.03);
+          gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.45);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start(t);
+          osc.stop(t + 0.5);
+        } catch (e) { /* audio unavailable: best effort only */ }
+      }
+
+      function ensureNotifyPermission() {
+        if (typeof Notification === 'undefined' || Notification.permission !== 'default') return;
+        try {
+          // Re-render the pill once the browser prompt settles.
+          Promise.resolve(Notification.requestPermission()).then(renderPill).catch(() => {});
+        } catch (e) { /* ignore */ }
+      }
+
+      function systemNotify(body) {
+        if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return false;
+        try {
+          const n = new Notification('Agent finished', { body: body, tag: 'dsh-notify' });
+          n.onclick = function () { window.focus(); n.close(); };
+          return true;
+        } catch (e) { return false; }
+      }
+
+      let titleCancel = null;
+      function flashTitle() {
+        if (titleCancel !== null) return; // already flashing
+        const original = document.title;
+        document.title = '\u2713 Agent finished';
+        titleCancel = ctx.timeout(() => {
+          document.title = original;
+          titleCancel = null;
+        }, TITLE_FLASH_MS);
+      }
+
+      /** Cross-surface announcement for finished sessions (labels = cwd basenames). */
+      function announceFinished(labels) {
+        const where = labels.filter(Boolean).join(', ');
+        const body = 'Execution completed' + (where ? ' in ' + where : '');
+        if (!document.hidden) {
+          if (!document.hasFocus()) flashTitle(); // other window focused: cue in tab strip
+          return;
+        }
+        const shown = systemNotify(body);
+        playChime();
+        if (!shown) flashTitle(); // tab-strip cue when notifications unavailable
+      }
 
       function Toast(props) {
         React.useEffect(() => {
@@ -103,11 +230,28 @@ window.__ModuleLoader__.load({
           React.useEffect(() => { setRunning(sel); }, [sel]);
         }
 
+        // Self-test seat: the status pill dispatches this to prove the toast path.
+        React.useEffect(() => {
+          const onTest = (e) => {
+            setToasts((prev) => prev.concat({
+              id: 'dn-test-' + Date.now(),
+              title: 'Agent finished (self-test)',
+              message: e.detail.message,
+            }).slice(-MAX_TOASTS));
+          };
+          window.addEventListener('dsh-notify:test', onTest);
+          return () => window.removeEventListener('dsh-notify:test', onTest);
+        }, []);
+
         React.useEffect(() => {
           if (running === null) return; // not primed yet
+          for (const id of running.ids) {
+            if (running.meta[id]) metaHistory[id] = running.meta[id];
+          }
           const current = new Set(running.ids);
           if (prevRunning === null) {
             prevRunning = current; // first observation: no toasts
+            console.info('[dsh-notify] primed; running sessions =', current.size);
             return;
           }
           const finished = [];
@@ -116,13 +260,16 @@ window.__ModuleLoader__.load({
           });
           prevRunning = current;
           if (finished.length === 0) return;
+          console.info('[dsh-notify] finish detected for', finished,
+            'document.hidden =', document.hidden, 'hasFocus =', document.hasFocus());
           const now = Date.now();
           const fresh = finished.map((id, i) => ({
             id: 'dn-' + now + '-' + i,
             title: 'Agent finished',
-            message: 'Execution completed in ' + sessionLabel(running.meta[id]),
+            message: 'Execution completed in ' + sessionLabel(metaHistory[id]),
           }));
           setToasts((prev) => prev.concat(fresh).slice(-MAX_TOASTS));
+          announceFinished(finished.map((id) => sessionLabel(metaHistory[id])));
         }, [running]);
 
         const dismiss = (id) => setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -139,11 +286,14 @@ window.__ModuleLoader__.load({
       }
 
       // Additive seat beside the shipped shell.overlay entries (dsh-pet, lofi):
-      // a fresh id is added instead of replacing an occupant.
+      // a fresh id is added instead of replacing an occupant. The registered
+      // component IS a React function component: the renderer calls it with
+      // the root-scope standard kit (which carries `useSessions`), so the
+      // props MUST be forwarded — discarding them strands the detection hook.
       slots.inject('shell.overlay', () => {
         slots.register(
           { name: 'shell.overlay', id: 'dsh-notify.toasts', order: 5, label: 'Agent finished' },
-          () => React.createElement(ToastStack, null)
+          (props) => React.createElement(ToastStack, props)
         );
       });
     }
