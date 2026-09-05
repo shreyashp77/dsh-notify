@@ -35,7 +35,8 @@ tab is not in the foreground, so every finish is additionally announced):
   Execution completed in \<cwd\>") that surfaces over whichever tab or window
   you're looking at. Clicking it focuses the GUI. Requires notification
   permission: the plugin calls `Notification.requestPermission()` on load and
-  on your first click (allow the browser prompt).
+  on your first click (allow the browser prompt). If the prompt is missed,
+  grant it via the site-settings (🔒) icon in the address bar.
 - **Chime** — a short two-tone WebAudio beep, best effort.
 - **Tab-title flash** — the tab title becomes "✓ Agent finished" for
   `TITLE_FLASH_MS` (default 6 s) as a fallback when notifications are denied

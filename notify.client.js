@@ -34,8 +34,6 @@ window.__ModuleLoader__.load({
       .dn-toast-msg { opacity: 0.85; word-break: break-word; }
       .dn-toast-x { position: absolute; top: 4px; right: 6px; background: none; border: none; color: inherit; opacity: 0.6; cursor: pointer; font-size: 15px; padding: 2px 5px; }
       .dn-toast-x:hover { opacity: 1; }
-      .dn-badge { position: fixed; top: 12px; right: 12px; z-index: 10001; padding: 6px 12px; border-radius: 999px; background: rgba(24, 26, 32, 0.92); color: #e5e7eb; border: 1px solid rgba(255,255,255,0.15); font-size: 12px; font-family: ui-sans-serif, system-ui, sans-serif; cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,0.35); }
-      .dn-badge:hover { border-color: rgba(255,255,255,0.4); }
       @keyframes dn-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
     `;
 
@@ -71,46 +69,6 @@ window.__ModuleLoader__.load({
       ensureNotifyPermission();
       window.addEventListener('pointerdown', ensureNotifyPermission, { once: true, capture: true });
 
-      /* Always-visible status/test pill (top-right). Adaptive:
-       *   permission default -> "allow finish notifications" (click = request)
-       *   permission denied  -> "notifications blocked (site settings)"
-       *   permission granted -> "test notify" (click = fire a test OS
-       *                          notification + test toast, to verify the
-       *                          whole pathway with one click). */
-      let pill = null;
-      function renderPill() {
-        const perm = typeof Notification !== 'undefined' ? Notification.permission : 'unsupported';
-        if (perm === 'unsupported') return; // nothing to show or fix in-browser
-        if (!pill) {
-          pill = document.createElement('button');
-          pill.className = 'dn-badge';
-          pill.setAttribute('data-plugin', 'dsh-notify');
-          pill.addEventListener('click', () => {
-            if (Notification.permission === 'default') {
-              ensureNotifyPermission();
-            } else if (Notification.permission === 'granted') {
-              const ok = systemNotify('dsh-notify self-test: if you read this in another tab, cross-tab notifications work.');
-              playChime();
-              fireTestToast('self-test fired; OS notification shown: ' + ok);
-              console.info('[dsh-notify] self-test: systemNotify =', ok);
-            }
-            setTimeout(renderPill, 400);
-          });
-          document.body.appendChild(pill);
-        }
-        pill.textContent = perm === 'granted'
-          ? '\u{1F514} test notify'
-          : perm === 'denied'
-            ? '\u{1F507} notifications blocked (site settings)'
-            : '\u{1F514} allow finish notifications';
-      }
-      function fireTestToast(message) {
-        window.dispatchEvent(new CustomEvent('dsh-notify:test', { detail: { message: message } }));
-      }
-      renderPill();
-      // Re-check after the load-time/first-click prompt settles.
-      setTimeout(renderPill, 1500);
-      setTimeout(renderPill, 5000);
 
       /* Per-materialization state: previous running set (null = not primed). */
       let prevRunning = null;
@@ -150,10 +108,7 @@ window.__ModuleLoader__.load({
 
       function ensureNotifyPermission() {
         if (typeof Notification === 'undefined' || Notification.permission !== 'default') return;
-        try {
-          // Re-render the pill once the browser prompt settles.
-          Promise.resolve(Notification.requestPermission()).then(renderPill).catch(() => {});
-        } catch (e) { /* ignore */ }
+        try { Notification.requestPermission(); } catch (e) { /* ignore */ }
       }
 
       function systemNotify(body) {
@@ -229,19 +184,6 @@ window.__ModuleLoader__.load({
           );
           React.useEffect(() => { setRunning(sel); }, [sel]);
         }
-
-        // Self-test seat: the status pill dispatches this to prove the toast path.
-        React.useEffect(() => {
-          const onTest = (e) => {
-            setToasts((prev) => prev.concat({
-              id: 'dn-test-' + Date.now(),
-              title: 'Agent finished (self-test)',
-              message: e.detail.message,
-            }).slice(-MAX_TOASTS));
-          };
-          window.addEventListener('dsh-notify:test', onTest);
-          return () => window.removeEventListener('dsh-notify:test', onTest);
-        }, []);
 
         React.useEffect(() => {
           if (running === null) return; // not primed yet
